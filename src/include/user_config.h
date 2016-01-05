@@ -25,5 +25,8 @@
 #ifndef __USER_CONFIG_H__
 #define __USER_CONFIG_H__
 
+#define WIFI_SSID "enter ssid here"
+#define WIFI_PASSWORD "enter password here"
+
 #endif
 

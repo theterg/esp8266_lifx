@@ -2,3 +2,6 @@
 *.bin
 *.S
 *.output
+
+# Private credentials may be stored here
+src/include/user_config.h

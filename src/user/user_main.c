@@ -32,6 +32,8 @@
 #include "lwip/netdb.h"
 #include "lwip/udp.h"
 
+#include "user_config.h"
+
 // *****************************************************************************
 // Implementation details glined from the python Lazylights module
 // https://github.com/mpapi/lazylights
@@ -191,8 +193,8 @@ void ICACHE_FLASH_ATTR
 user_init(void)
 {
     struct station_config sta_conf = {
-        .ssid = "wifissid",
-        .password = "wifipassword",
+        .ssid = WIFI_SSID,
+        .password = WIFI_PASSWORD,
         .bssid_set = 0,
         .bssid = ""
     };
