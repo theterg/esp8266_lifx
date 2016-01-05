@@ -18,7 +18,7 @@ Compiling
 
 Run ```make``` from within the root of this repository.
 Do not run ```make``` from within the ```src/``` directory, [it is expected to not work](http://kacangbawang.com/latest-at-firmware-for-esp8266-with-512k-flash/).
-This should produce binaries in the /bin directory
+This should produce binaries in the /bin directory.
 "flash.sh" should deploy the binaries to the ESP8266 if
 [esptool.py](https://github.com/themadinventor/esptool) has been
 installed and is available on the system path.
@@ -29,8 +29,15 @@ Note
 This project *barely* fits on the default ESP8266 512k memory map.
 See [this critical blog
 post](http://kacangbawang.com/esp8266-512k-flash-compiling-using-rtos-sdk-1-3/)
-for details on how to expand the irom0_0_seg
+for details on how to expand the irom0_0_seg.
 NOTE: you'll need to modify ```flash.sh``` correspondingly!
 
 Hat tipping to [kacang bawang](http://kacangbawang.com/) and
 [kolban](http://bbs.espressif.com/viewtopic.php?f=7&t=1339#p4518).
+
+More Credits
+------------
+
+* [mpapi/lazylights](https://github.com/mpapi/lazylights) used as
+  inspiration and for testing
+* Protocol details taken from [magicmonkey/lifxjs](https://github.com/magicmonkey/lifxjs/blob/master/Protocol.md)
