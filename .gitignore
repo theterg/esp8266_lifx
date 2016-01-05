@@ -1,0 +1,4 @@
+*.dump
+*.bin
+*.S
+*.output
