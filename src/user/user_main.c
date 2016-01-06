@@ -45,9 +45,39 @@
 #define BROADCAST_ADDR "255.255.255.255"
 #define BROADCAST_PORT 56700
 
+// Uncomment to print all received packet contents to the debug UART
+//#define PKT_DEBUG
+
+#define RESP_GATEWAY 0x03
+
+
+
+typedef struct {
+  struct ip_addr addr;
+  struct pbuf * p;
+} udp_msg_t;
+
+typedef struct __attribute__((packed)) {
+  uint16_t size;
+  uint16_t protocol;
+  uint32_t reserved1;
+  uint8_t target_mac[6];
+  uint16_t reserved2;
+  uint8_t mac[6];
+  uint16_t reserved3;
+  uint64_t timestamp;
+  uint16_t packet_type;
+  uint16_t reserved4;
+} MsgHeader_t;
+
+typedef struct __attribute__((packed)) {
+  MsgHeader_t header;
+  uint8_t service;
+  uint32_t port;
+} MsgPANGateway_t;
+
 uint8_t network_ready = 0;
 xQueueHandle msgqueue = 0;
-
 
 // Callback executed from within the lwip subsystem
 // WARN: Don't know where from, could be an ISR!
@@ -55,35 +85,76 @@ xQueueHandle msgqueue = 0;
 void my_udp_recv(void * arg, struct udp_pcb * pcb, struct pbuf *p,
             struct ip_addr * addr, u16_t port) {
     int ret;
+    udp_msg_t msg;
     if (p != NULL) {
       // We've received a new message
       // It's not a good idea to do much work in this function,
       // queue up the message and handle it elsewhere
-      if (!xQueueSend( msgqueue, &p, 1000/portTICK_RATE_MS)) {
+      memcpy(&msg.addr, addr, sizeof(struct ip_addr));
+      msg.p = p;
+      if (!xQueueSend( msgqueue, &msg, 1000/portTICK_RATE_MS)) {
         os_printf("[discover] Couldn't queue!\r\n");
       }
       // WARN: parser MUST free the pbuf once it's been consumed!
     }
 }
 
+
+
+void ICACHE_FLASH_ATTR
+parse_msg(struct ip_addr addr, struct pbuf * pkt) {
+    uint8_t * data;
+    MsgHeader_t * tmp;
+    int i;
+    // Additional sanity check
+    if (pkt == NULL)
+      return;
+    // Minimum Lifx packet length
+    if (pkt->len < 36)
+      return;
+    data = (uint8_t *)pkt->payload;
+    tmp = pkt->payload;
+    switch (tmp->packet_type) {
+    case RESP_GATEWAY:
+      os_printf("[parse] New bulb: ip: %d.%d.%d.%d, mac: %02x:%02x:%02x:%02x:%02x:%02x, service: %02x, port: %d\r\n",
+          addr.addr & (0xFFUL << 0), (addr.addr & 0xFF00UL ) >> 8, (addr.addr & 0xFF0000UL) >> 16, (addr.addr & 0xFF000000UL ) >> 24,
+          tmp->mac[0], tmp->mac[1], tmp->mac[2], tmp->mac[3], tmp->mac[4], tmp->mac[5],
+          data[36], data[37] | (data[38] << 8) | (data[39] << 16) | (data[40] << 24));
+      break;
+    default:
+      os_printf("[parse] unknown pkt: size: %d, protocol: %04x, target_mac: %02x%02x%02x%02x%02x%02x, mac: %02x%02x%02x%02x%02x%02x, type: %02x\r\n",
+          tmp->size, tmp->protocol,
+          tmp->target_mac[0], tmp->target_mac[1], tmp->target_mac[2], tmp->target_mac[3], tmp->target_mac[4], tmp->target_mac[5],
+          tmp->mac[0], tmp->mac[1], tmp->mac[2], tmp->mac[3], tmp->mac[4], tmp->mac[5],
+          tmp->packet_type);
+      break;
+    }
+#ifdef PKT_DEBUG
+    os_printf("[RECV] (%d:%d) ", msg.p->len, msg.p->tot_len);
+    data = (uint8_t *)pkt->payload;
+    for (i=0;i < pkt->len; i++) {
+      os_printf("%02x", data[i]);
+    }
+    os_printf("\r\n");
+#endif //PKT_DEBUG
+}
+
 void ICACHE_FLASH_ATTR
 msgparse_task(void *pvParameters)
 {
-    struct pbuf *p;
-    uint8_t * data;
-    int i;
+    udp_msg_t msg;
+    struct pbuf *q;
 
     while(1) {
-      if (xQueueReceive( msgqueue, &p, portMAX_DELAY) == pdTRUE) {
+      if (xQueueReceive( msgqueue, &msg, portMAX_DELAY) == pdTRUE) {
         //A message was recvd!
-        os_printf("[discover] RECV [%d:%d] ", p->len, p->tot_len);
-        data = (uint8_t *)p->payload;
-        for (i=0;i < p->len; i++) {
-          os_printf("%02x", data[i]);
-        }
-        os_printf("\r\n");
+        q = msg.p;
+        do {
+          parse_msg(msg.addr, q);
+          q = q->next;
+        } while(q != NULL);
         // MUST free the pbuf or we risk running out of RAM or WORSE
-        pbuf_free(p);
+        pbuf_free(msg.p);
       }
     }
     vTaskDelete(NULL);
@@ -211,7 +282,7 @@ user_init(void)
 
     // Queue will hold pointers to pbuf structures
     // No need to copy memory around
-    msgqueue = xQueueCreate( 25, sizeof(void *));
+    msgqueue = xQueueCreate( 25, sizeof(udp_msg_t));
     if (msgqueue == NULL) {
       os_printf("ERR: Couldn't create queue!\r\n");
       return;
