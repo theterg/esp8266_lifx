@@ -33,13 +33,7 @@
 #include "lwip/udp.h"
 
 #include "user_config.h"
-
-// *****************************************************************************
-// Implementation details glined from the python Lazylights module
-// https://github.com/mpapi/lazylights
-// Which in turn was based largely off lifxjs:
-// https://github.com/magicmonkey/lifxjs/blob/master/Protocol.md
-// *****************************************************************************
+#include "lifx_interface.h"
 
 // UDP Broadcast to all devices on port 56700 (LIFX protocol)
 #define BROADCAST_ADDR "255.255.255.255"
@@ -48,33 +42,10 @@
 // Uncomment to print all received packet contents to the debug UART
 //#define PKT_DEBUG
 
-#define RESP_GATEWAY 0x03
-
-
-
 typedef struct {
   struct ip_addr addr;
   struct pbuf * p;
 } udp_msg_t;
-
-typedef struct __attribute__((packed)) {
-  uint16_t size;
-  uint16_t protocol;
-  uint32_t reserved1;
-  uint8_t target_mac[6];
-  uint16_t reserved2;
-  uint8_t mac[6];
-  uint16_t reserved3;
-  uint64_t timestamp;
-  uint16_t packet_type;
-  uint16_t reserved4;
-} MsgHeader_t;
-
-typedef struct __attribute__((packed)) {
-  MsgHeader_t header;
-  uint8_t service;
-  uint32_t port;
-} MsgPANGateway_t;
 
 uint8_t network_ready = 0;
 xQueueHandle msgqueue = 0;
@@ -100,45 +71,6 @@ void my_udp_recv(void * arg, struct udp_pcb * pcb, struct pbuf *p,
 }
 
 
-
-void ICACHE_FLASH_ATTR
-parse_msg(struct ip_addr addr, struct pbuf * pkt) {
-    uint8_t * data;
-    MsgHeader_t * tmp;
-    int i;
-    // Additional sanity check
-    if (pkt == NULL)
-      return;
-    // Minimum Lifx packet length
-    if (pkt->len < 36)
-      return;
-    data = (uint8_t *)pkt->payload;
-    tmp = pkt->payload;
-    switch (tmp->packet_type) {
-    case RESP_GATEWAY:
-      os_printf("[parse] New bulb: ip: %d.%d.%d.%d, mac: %02x:%02x:%02x:%02x:%02x:%02x, service: %02x, port: %d\r\n",
-          addr.addr & (0xFFUL << 0), (addr.addr & 0xFF00UL ) >> 8, (addr.addr & 0xFF0000UL) >> 16, (addr.addr & 0xFF000000UL ) >> 24,
-          tmp->mac[0], tmp->mac[1], tmp->mac[2], tmp->mac[3], tmp->mac[4], tmp->mac[5],
-          data[36], data[37] | (data[38] << 8) | (data[39] << 16) | (data[40] << 24));
-      break;
-    default:
-      os_printf("[parse] unknown pkt: size: %d, protocol: %04x, target_mac: %02x%02x%02x%02x%02x%02x, mac: %02x%02x%02x%02x%02x%02x, type: %02x\r\n",
-          tmp->size, tmp->protocol,
-          tmp->target_mac[0], tmp->target_mac[1], tmp->target_mac[2], tmp->target_mac[3], tmp->target_mac[4], tmp->target_mac[5],
-          tmp->mac[0], tmp->mac[1], tmp->mac[2], tmp->mac[3], tmp->mac[4], tmp->mac[5],
-          tmp->packet_type);
-      break;
-    }
-#ifdef PKT_DEBUG
-    os_printf("[RECV] (%d:%d) ", msg.p->len, msg.p->tot_len);
-    data = (uint8_t *)pkt->payload;
-    for (i=0;i < pkt->len; i++) {
-      os_printf("%02x", data[i]);
-    }
-    os_printf("\r\n");
-#endif //PKT_DEBUG
-}
-
 void ICACHE_FLASH_ATTR
 msgparse_task(void *pvParameters)
 {
@@ -147,13 +79,25 @@ msgparse_task(void *pvParameters)
 
     while(1) {
       if (xQueueReceive( msgqueue, &msg, portMAX_DELAY) == pdTRUE) {
-        //A message was recvd!
+        // A message was recvd!
+        // Copy pbuf pointer so we can dive into it
         q = msg.p;
+        // Iterate over each pbuf in the chain
+        // Each time replacing q with q->next
         do {
-          parse_msg(msg.addr, q);
+          parseBroadcastMsg(msg.addr, (uint8_t *)q->payload, q->len);
+#ifdef PKT_DEBUG
+          os_printf("[RECV] (%d:%d) ", msg.p->len, msg.p->tot_len);
+          data = (uint8_t *)pkt->payload;
+          for (i=0;i < pkt->len; i++) {
+            os_printf("%02x", data[i]);
+          }
+          os_printf("\r\n");
+#endif //PKT_DEBUG
+
           q = q->next;
         } while(q != NULL);
-        // MUST free the pbuf or we risk running out of RAM or WORSE
+        // MUST free the pbuf or we risk running out of RAM
         pbuf_free(msg.p);
       }
     }
@@ -184,14 +128,8 @@ discover_bulbs(void) {
       os_printf("[discover] error pbuf_alloc %d\r\n", ret);
       return;
     }
-    // See https://github.com/mpapi/lazylights/blob/master/lazylights.py
-    // or https://github.com/magicmonkey/lifxjs/blob/master/Protocol.md
-    // <HHxxxx6sxx6sxxQHxxA
-    // Essentially, query all listening bulbs for what TCP port to connect to
-    memset(p->payload, 0, 36);
-    ((uint8_t *)p->payload)[0] = 36; // len
-    ((uint8_t *)p->payload)[3] = 0x34; // PROTOCOL_DISCOVERY
-    ((uint8_t *)p->payload)[32] = 2; // REQ_GATEWAY
+
+    getBroadcastPkt((uint8_t *)p->payload, 36);
 
     ret = udp_sendto(pcb, p, IP_ADDR_BROADCAST, BROADCAST_PORT);
     if (ret != ERR_OK) {
