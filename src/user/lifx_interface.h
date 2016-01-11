@@ -5,6 +5,15 @@
 
 
 typedef struct __attribute__((packed)) {
+  uint8_t second;
+  uint8_t minute;
+  uint8_t hour;
+  uint8_t day;
+  char month[3];
+  uint8_t year;
+} LifxTimestamp_t;
+
+typedef struct __attribute__((packed)) {
   uint16_t size;
   uint16_t protocol;
   uint32_t reserved1;
@@ -26,6 +35,7 @@ typedef struct __attribute__((packed)) {
 typedef struct {
   struct ip_addr addr;
   uint8_t mac[6];
+  uint32_t last_seen;
 } Bulb_t;
 
 

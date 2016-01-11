@@ -150,10 +150,9 @@ monitor_task(void *pvParameters)
 {
     while(1) {
       if (network_ready) {
-        os_printf("[TSK] Discover bulbs\r\n");
         discover_bulbs();
         // Check again in approximately 1 minute
-        vTaskDelay(60000/portTICK_RATE_MS);
+        vTaskDelay(10000/portTICK_RATE_MS);
       }
       vTaskDelay(200/portTICK_RATE_MS);
     }

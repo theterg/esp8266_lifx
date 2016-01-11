@@ -22,10 +22,13 @@
 
 #define MAX_BULBS 20
 
+// How many seconds to say a bulb is no longer present
+#define BULB_TIMEOUT (60)
+
 // Globals
 Bulb_t bulbs[20];
 uint8_t num_bulbs = 0;
-
+uint32_t sys_start_date = 0;
 
 void ICACHE_FLASH_ATTR
 getBroadcastPkt(uint8_t * data, int len) {
@@ -43,10 +46,82 @@ getBroadcastPkt(uint8_t * data, int len) {
   tmp->packet_type = 2;   // REQ_GATEWAY
 }
 
+
+inline uint32_t getUnixTime() {
+    return (xTaskGetTickCount()/100) + sys_start_date;
+}
+
+
+// Using a static array is likely not efficient
+// TODO - Upgrade bulb storage to use a linked list
+void ICACHE_FLASH_ATTR
+_removeBulb(uint8_t idx) {
+  int i;
+  for (i=idx;i<num_bulbs-1;i++) {
+    memcpy(&bulbs[i], &bulbs[i+1], sizeof(Bulb_t));
+  }
+  num_bulbs--;
+}
+
+void ICACHE_FLASH_ATTR
+_bulbTimeout() {
+  int i;
+  uint32_t curr_time = getUnixTime();
+  for (i=0;i<num_bulbs;i++) {
+    if (curr_time > bulbs[i].last_seen + BULB_TIMEOUT) {
+      os_printf("[timeout] Removing bulb[%d]: ip: %d.%d.%d.%d, mac: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+          i,
+          bulbs[i].addr.addr & (0xFFUL << 0), (bulbs[i].addr.addr & 0xFF00UL ) >> 8, (bulbs[i].addr.addr & 0xFF0000UL) >> 16, (bulbs[i].addr.addr & 0xFF000000UL ) >> 24,
+          bulbs[i].mac[0], bulbs[i].mac[1], bulbs[i].mac[2], bulbs[i].mac[3], bulbs[i].mac[4], bulbs[i].mac[5]);
+      _removeBulb(i);
+    }
+  }
+}
+
+
+void ICACHE_FLASH_ATTR
+_checkBulb(MsgHeader_t * pkt, struct ip_addr addr) {
+  int i, j;
+  uint8_t found = 0;
+  _bulbTimeout();
+  if (num_bulbs >= MAX_BULBS) return;
+
+  // Check the bulbs list for the first instance with the same MAC
+  for (i=0;i<num_bulbs;i++) {
+    found = 1;
+    for (j=0;j<6;j++) {
+      if (pkt->target_mac[j] != bulbs[i].mac[j]) {
+        found = 0;
+        break;
+      }
+    }
+    if (found) break;
+  }
+
+  // If bulb already exists, just update it's last_seen timestamp
+  if (found) {
+    bulbs[i].last_seen = getUnixTime();
+  } else {
+    os_printf("[checkBulb] Adding New bulb: ip: %d.%d.%d.%d, mac: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+        addr.addr & (0xFFUL << 0), (addr.addr & 0xFF00UL ) >> 8, (addr.addr & 0xFF0000UL) >> 16, (addr.addr & 0xFF000000UL ) >> 24,
+        pkt->target_mac[0], pkt->target_mac[1], pkt->target_mac[2], pkt->target_mac[3], pkt->target_mac[4], pkt->target_mac[5]);
+    memcpy(&bulbs[num_bulbs].addr, &addr, sizeof(addr));
+    memcpy(&bulbs[num_bulbs].mac, &(pkt->target_mac), sizeof(pkt->target_mac));
+    bulbs[num_bulbs].last_seen = (xTaskGetTickCount()/100) + sys_start_date;
+    num_bulbs++;
+  }
+}
+
+void ICACHE_FLASH_ATTR
+_clearBulbs(void) {
+  num_bulbs = 0;
+}
+
 void ICACHE_FLASH_ATTR
 parseBroadcastMsg(struct ip_addr addr, uint8_t * pkt, int len) {
     uint8_t * data;
     MsgHeader_t * tmp;
+    uint32_t time;
     int i;
     // Additional sanity check
     if (pkt == NULL)
@@ -55,12 +130,24 @@ parseBroadcastMsg(struct ip_addr addr, uint8_t * pkt, int len) {
     if (len < 36)
       return;
     tmp = (MsgHeader_t *)pkt;
+    // The ESP8266 doesn't do 64-bit math very well
+    // Timestamp is specified in nanoseconds - convert to seconds
+    time = tmp->timestamp/1000000000;
+    // Use the discovery packet as a bootleg NTP server
+    // Assuming the bulbs have accurate time, and that
+    // the in-flight packet time is less than a second,
+    // Use the received timestamp as the current UNIX time
+    if (sys_start_date == 0) {
+      sys_start_date = time - xTaskGetTickCount()/100;
+    }
     switch (tmp->packet_type) {
     case RESP_GATEWAY:
-      os_printf("[parse] New bulb: ip: %d.%d.%d.%d, mac: %02x:%02x:%02x:%02x:%02x:%02x, service: %02x, port: %d\r\n",
+      /*os_printf("[parse] New bulb: ip: %d.%d.%d.%d, mac: %02x:%02x:%02x:%02x:%02x:%02x, service: %02x, port: %d\r\n",
           addr.addr & (0xFFUL << 0), (addr.addr & 0xFF00UL ) >> 8, (addr.addr & 0xFF0000UL) >> 16, (addr.addr & 0xFF000000UL ) >> 24,
           tmp->target_mac[0], tmp->target_mac[1], tmp->target_mac[2], tmp->target_mac[3], tmp->target_mac[4], tmp->target_mac[5],
           pkt[36], pkt[37] | (pkt[38] << 8) | (pkt[39] << 16) | (pkt[40] << 24));
+      */
+      _checkBulb(tmp, addr);
       break;
     default:
       os_printf("[parse] unknown pkt: size: %d, protocol: %04x, target_mac: %02x%02x%02x%02x%02x%02x, mac: %02x%02x%02x%02x%02x%02x, type: %02x\r\n",
