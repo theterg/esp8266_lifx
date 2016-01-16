@@ -32,6 +32,8 @@
 #include "lwip/netdb.h"
 #include "lwip/udp.h"
 
+#include "gpio.h"
+
 #include "user_config.h"
 #include "lifx_interface.h"
 
@@ -42,6 +44,10 @@
 // Uncomment to print all received packet contents to the debug UART
 //#define PKT_DEBUG
 
+#define BUTTON_GPIO_REG PERIPHS_IO_MUX_GPIO5_U
+#define BUTTON_GPIO_NUM 5
+#define BUTTON_DEBOUNCE_TIME 25  // Measured in FreeRTOS Ticks
+
 typedef struct {
   struct ip_addr addr;
   struct pbuf * p;
@@ -49,6 +55,7 @@ typedef struct {
 
 uint8_t network_ready = 0;
 xQueueHandle msgqueue = 0;
+uint32_t last_button_press = 0;
 
 // Callback executed from within the lwip subsystem
 // WARN: Don't know where from, could be an ISR!
@@ -76,6 +83,8 @@ msgparse_task(void *pvParameters)
 {
     udp_msg_t msg;
     struct pbuf *q;
+    char * data;
+    int i;
 
     while(1) {
       if (xQueueReceive( msgqueue, &msg, portMAX_DELAY) == pdTRUE) {
@@ -88,8 +97,8 @@ msgparse_task(void *pvParameters)
           parseBroadcastMsg(msg.addr, (uint8_t *)q->payload, q->len);
 #ifdef PKT_DEBUG
           os_printf("[RECV] (%d:%d) ", msg.p->len, msg.p->tot_len);
-          data = (uint8_t *)pkt->payload;
-          for (i=0;i < pkt->len; i++) {
+          data = (uint8_t *)q->payload;
+          for (i=0;i < q->len; i++) {
             os_printf("%02x", data[i]);
           }
           os_printf("\r\n");
@@ -145,6 +154,22 @@ discover_bulbs(void) {
     udp_remove(pcb);
 }
 
+void ICACHE_FLASH_ATTR registerInterrupt(int pin, GPIO_INT_TYPE mode)
+{
+   portENTER_CRITICAL();
+
+   // disable open drain
+   GPIO_REG_WRITE(GPIO_PIN_ADDR(GPIO_ID_PIN(pin)), 
+       GPIO_REG_READ(GPIO_PIN_ADDR(GPIO_ID_PIN(pin))) & (~ GPIO_PIN_PAD_DRIVER_SET(GPIO_PAD_DRIVER_ENABLE))); 
+   //clear interrupt status
+   GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(pin));
+
+        // set the mode   
+   gpio_pin_intr_state_set(GPIO_ID_PIN(pin), mode);
+
+   portEXIT_CRITICAL();
+}
+
 void ICACHE_FLASH_ATTR
 monitor_task(void *pvParameters)
 {
@@ -190,6 +215,21 @@ wifi_handle_event_cb(System_Event_t *evt) {
     }
 }
 
+void gpio_intr_handler(void *arg) {
+  uint32_t gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+  uint32_t curr_ticks = xTaskGetTickCountFromISR();
+  // Immediately clear the interrupt status register
+  GPIO_REG_WRITE(GPIO_STATUS_ADDRESS, 0);
+  if (gpio_status & (1 << BUTTON_GPIO_NUM)) {
+    // Button has been pressed - check debounce
+    if ((curr_ticks - last_button_press) > BUTTON_DEBOUNCE_TIME) {
+      os_printf("[gpio] Button pressed at %d\r\n", curr_ticks);
+      last_button_press = curr_ticks;
+    }
+  }
+}
+
+
 
 /******************************************************************************
  * FunctionName : user_init
@@ -228,5 +268,13 @@ user_init(void)
     // Start tasks (these will run indefinately)
     xTaskCreate(monitor_task, "mon_task", 1024, NULL, 2, NULL);
     xTaskCreate(msgparse_task, "parse_task", 1024, NULL, 2, NULL);
+
+    // Create button interrupt
+    PIN_FUNC_SELECT(BUTTON_GPIO_REG, 0);   // Button pin as GPIO
+    PIN_PULLUP_EN(BUTTON_GPIO_REG);        // Enable pullup
+    _xt_isr_attach(ETS_GPIO_INUM, (_xt_isr)gpio_intr_handler, NULL);
+    _xt_isr_unmask(1<<ETS_GPIO_INUM);      // Enable ALL gpio interrupts
+    // Attach button interrupt, falling edge only
+    registerInterrupt(BUTTON_GPIO_NUM,  GPIO_PIN_INTR_NEGEDGE);
 }
 

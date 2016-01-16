@@ -26,7 +26,7 @@
 #define BULB_TIMEOUT (60)
 
 // Globals
-Bulb_t bulbs[20];
+Bulb_t bulbs[MAX_BULBS];
 uint8_t num_bulbs = 0;
 uint32_t sys_start_date = 0;
 
@@ -83,6 +83,7 @@ void ICACHE_FLASH_ATTR
 _checkBulb(MsgHeader_t * pkt, struct ip_addr addr) {
   int i, j;
   uint8_t found = 0;
+
   _bulbTimeout();
   if (num_bulbs >= MAX_BULBS) return;
 
