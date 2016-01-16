@@ -45,4 +45,11 @@ getBroadcastPkt(uint8_t * data, int len);
 void ICACHE_FLASH_ATTR
 parseBroadcastMsg(struct ip_addr addr, uint8_t * pkt, int len);
 
+void ICACHE_FLASH_ATTR
+getPktSetBulbPower(uint8_t * data, int len, int idx, uint16_t state);
+
+ip_addr_t * ICACHE_FLASH_ATTR getBulbAddr(uint8_t idx);
+
+uint8_t ICACHE_FLASH_ATTR getNumBulbs();
+
 #endif //__LIFX_INTERFACE_H_

@@ -9,6 +9,8 @@
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "lwip/udp.h"
+#include "lwip/api.h"
+#include "lwip/netbuf.h"
 
 
 // *****************************************************************************
@@ -46,9 +48,38 @@ getBroadcastPkt(uint8_t * data, int len) {
   tmp->packet_type = 2;   // REQ_GATEWAY
 }
 
+void ICACHE_FLASH_ATTR
+getPktSetBulbPower(uint8_t * data, int len, int idx, uint16_t state) {
+  MsgHeader_t * tmp;
+
+  if (len < 38) return;
+  memset(data, 0, 38);
+  tmp = (MsgHeader_t *)data;
+
+  tmp->size = 38;
+  tmp->protocol = 0x1400;  // PROTOCOL_COMMAND
+  tmp->packet_type = 0x15; // Get power state
+  memcpy(&tmp->target_mac, &bulbs[idx].mac, 6);
+  strcpy((char *)&tmp->mac, "LIFXV2"); // Don't know if this matters...
+  // The payload
+  memcpy(&data[36], &state, 2);
+}
+
 
 inline uint32_t getUnixTime() {
     return (xTaskGetTickCount()/100) + sys_start_date;
+}
+
+ip_addr_t * ICACHE_FLASH_ATTR
+getBulbAddr(uint8_t idx) {
+  if (idx >= num_bulbs) {
+    return NULL;
+  }
+  return &bulbs[idx].addr;
+}
+
+uint8_t ICACHE_FLASH_ATTR getNumBulbs() {
+  return num_bulbs;
 }
 
 

@@ -31,6 +31,8 @@
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "lwip/udp.h"
+#include "lwip/netbuf.h"
+#include "lwip/api.h"
 
 #include "gpio.h"
 
@@ -44,8 +46,8 @@
 // Uncomment to print all received packet contents to the debug UART
 //#define PKT_DEBUG
 
-#define BUTTON_GPIO_REG PERIPHS_IO_MUX_GPIO5_U
-#define BUTTON_GPIO_NUM 5
+#define BUTTON_GPIO_REG PERIPHS_IO_MUX_GPIO0_U
+#define BUTTON_GPIO_NUM 0
 #define BUTTON_DEBOUNCE_TIME 25  // Measured in FreeRTOS Ticks
 
 typedef struct {
@@ -55,7 +57,9 @@ typedef struct {
 
 uint8_t network_ready = 0;
 xQueueHandle msgqueue = 0;
+xQueueHandle buttonevt = 0;
 uint32_t last_button_press = 0;
+ip_addr_t myaddr;
 
 // Callback executed from within the lwip subsystem
 // WARN: Don't know where from, could be an ISR!
@@ -204,6 +208,7 @@ wifi_handle_event_cb(System_Event_t *evt) {
       break;
     case EVENT_STAMODE_GOT_IP:
       os_printf("[EVT] GOT IP\r\n");
+      memcpy(&myaddr, &evt->event_info.got_ip.ip, sizeof(myaddr));
       network_ready = 1;
       break;
     case EVENT_STAMODE_DHCP_TIMEOUT:
@@ -215,20 +220,105 @@ wifi_handle_event_cb(System_Event_t *evt) {
     }
 }
 
+
 void gpio_intr_handler(void *arg) {
   uint32_t gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
   uint32_t curr_ticks = xTaskGetTickCountFromISR();
+  const uint8_t pin = 5;
   // Immediately clear the interrupt status register
   GPIO_REG_WRITE(GPIO_STATUS_ADDRESS, 0);
   if (gpio_status & (1 << BUTTON_GPIO_NUM)) {
     // Button has been pressed - check debounce
     if ((curr_ticks - last_button_press) > BUTTON_DEBOUNCE_TIME) {
-      os_printf("[gpio] Button pressed at %d\r\n", curr_ticks);
+      if (!xQueueSendFromISR( buttonevt, &pin, NULL)) {
+        os_printf("[gpio] Couldn't queue!\r\n");
+      }
       last_button_press = curr_ticks;
     }
   }
 }
 
+void ICACHE_FLASH_ATTR
+_setBulbState(int idx, uint16_t state) {
+  struct netconn * sendconn;
+  struct netbuf * sendbuf;
+  char * data;
+  err_t ret;
+
+  if (!network_ready) return;
+
+  sendconn = netconn_new( NETCONN_UDP );
+  if (sendconn == NULL) {
+    os_printf("[setbulb] Couldn't get netconn\r\n");
+    return;
+  }
+  sendbuf = netbuf_new();
+  if (sendbuf == NULL) {
+    os_printf("[setbulb] couldn't get sendbuff\r\n");
+    return;
+  }
+  data = netbuf_alloc(sendbuf, 38);
+  if (data == NULL) {
+    os_printf("[setbulb] couldn't alloc data\r\n");
+    return;
+  }
+
+  getPktSetBulbPower(data, 38, idx, state);
+
+  ret = netconn_bind(sendconn, &myaddr, 34435);
+  if (ret != ERR_OK) {
+    os_printf("[setbulb] connect error: %d\r\n", ret);
+    return;
+  }
+
+  netconn_set_recvtimeout( sendconn, 1000);
+  ret = netconn_connect(sendconn, getBulbAddr(idx), 56700);
+  if (ret != ERR_OK) {
+    os_printf("[setbulb] connect error: %d\r\n", ret);
+    return;
+  }
+  ret = netconn_send(sendconn, sendbuf);
+  if (ret != ERR_OK) {
+    os_printf("[setbulb] send error: %d\r\n", ret);
+  } else {
+  }
+
+  netbuf_free(sendbuf);
+  netbuf_delete(sendbuf);
+  netconn_disconnect(sendconn);
+  netconn_delete(sendconn);
+}
+
+void ICACHE_FLASH_ATTR
+button_task(void *pvParameters) {
+  uint8_t last_light_state = 0;
+  uint8_t pin;
+  uint8_t i;
+  ip_addr_t * addr;
+
+  while(1) {
+    if (xQueueReceive( buttonevt, &pin, portMAX_DELAY) == pdTRUE) {
+      // If we're disconnected, do nothing!
+      if (!network_ready) continue;
+      // Toggle the state of each bulb
+      for (i=0;i<getNumBulbs();i++) {
+        addr = getBulbAddr(i);
+        os_printf("[button] Set bulb at %d.%d.%d.%d ",
+          addr->addr & (0xFFUL << 0), (addr->addr & 0xFF00UL ) >> 8, (addr->addr & 0xFF0000UL) >> 16, (addr->addr & 0xFF000000UL ) >> 24);
+        if (last_light_state) {
+          os_printf("off\r\n");
+          _setBulbState(0, 0);
+        } else {
+          os_printf("on\r\n");
+          _setBulbState(0, 0xFFFF);
+        }
+      }
+      last_light_state = !last_light_state;
+    }
+  }
+
+  vTaskDelete(NULL);
+}
 
 
 /******************************************************************************
@@ -264,10 +354,16 @@ user_init(void)
       os_printf("ERR: Couldn't create queue!\r\n");
       return;
     }
+    buttonevt = xQueueCreate( 25, sizeof(uint8_t));
+    if (buttonevt == NULL) {
+      os_printf("ERR: Couldn't create buttonevent queue!\r\n");
+      return;
+    }
 
     // Start tasks (these will run indefinately)
     xTaskCreate(monitor_task, "mon_task", 1024, NULL, 2, NULL);
     xTaskCreate(msgparse_task, "parse_task", 1024, NULL, 2, NULL);
+    xTaskCreate(button_task, "button_task", 256, NULL, 1, NULL);
 
     // Create button interrupt
     PIN_FUNC_SELECT(BUTTON_GPIO_REG, 0);   // Button pin as GPIO
