@@ -52,4 +52,6 @@ ip_addr_t * ICACHE_FLASH_ATTR getBulbAddr(uint8_t idx);
 
 uint8_t ICACHE_FLASH_ATTR getNumBulbs();
 
+int ICACHE_FLASH_ATTR getBulbByMAC(const uint8_t * mac);
+
 #endif //__LIFX_INTERFACE_H_

@@ -50,6 +50,17 @@
 #define BUTTON_GPIO_NUM 0
 #define BUTTON_DEBOUNCE_TIME 25  // Measured in FreeRTOS Ticks
 
+#define LED_GPIO_REG PERIPHS_IO_MUX_GPIO5_U
+#define LED_GPIO_NUM 5
+#define LED_OFF() GPIO_OUTPUT_SET(LED_GPIO_NUM, 1)
+#define LED_ON() GPIO_OUTPUT_SET(LED_GPIO_NUM, 0)
+
+// What bulb should we toggle?
+// If CONTROL_ALL_BULBS is uncommented, all detected lights will be toggled
+// #define CONTROL_ALL_BULBS
+// Otherwise use the following MAC address:
+const uint8_t dest_mac[6] = {0xd0,0x73,0xd5,0x11,0x49,0x72};
+
 typedef struct {
   struct ip_addr addr;
   struct pbuf * p;
@@ -124,7 +135,7 @@ discover_bulbs(void) {
     struct pbuf *p;
     err_t ret;
 
-
+    LED_ON();
     // Using the RAW interface to LWIP
     // the socket and netconn interfaces didn't receive broadcast packets
     pcb = udp_new();
@@ -154,7 +165,9 @@ discover_bulbs(void) {
     pbuf_free(p);
     // MUST wait a given timeout for messages to be received before
     // tearing down the connection - udp_remove() will disable the callback
-    vTaskDelay(2500/portTICK_RATE_MS);
+    vTaskDelay(500/portTICK_RATE_MS);
+    LED_OFF();
+    vTaskDelay(2000/portTICK_RATE_MS);
     udp_remove(pcb);
 }
 
@@ -300,6 +313,7 @@ button_task(void *pvParameters) {
     if (xQueueReceive( buttonevt, &pin, portMAX_DELAY) == pdTRUE) {
       // If we're disconnected, do nothing!
       if (!network_ready) continue;
+#ifdef CONTROL_ALL_BULBS
       // Toggle the state of each bulb
       for (i=0;i<getNumBulbs();i++) {
         addr = getBulbAddr(i);
@@ -313,7 +327,23 @@ button_task(void *pvParameters) {
           _setBulbState(0, 0xFFFF);
         }
       }
-      last_light_state = !last_light_state;
+#else // !CONTROL_ALL_BULBS
+      // Only toggle the stored bulb
+      i = getBulbByMAC(dest_mac);
+      if (i >= 0) {
+        addr = getBulbAddr(i);
+        os_printf("[button] Set bulb at %d.%d.%d.%d ",
+          addr->addr & (0xFFUL << 0), (addr->addr & 0xFF00UL ) >> 8, (addr->addr & 0xFF0000UL) >> 16, (addr->addr & 0xFF000000UL ) >> 24);
+        if (last_light_state) {
+          os_printf("off\r\n");
+          _setBulbState(i, 0);
+        } else {
+          os_printf("on\r\n");
+          _setBulbState(i, 0xFFFF);
+        }
+        last_light_state = !last_light_state;
+      }
+#endif // CONTROL_ALL_BULBS
     }
   }
 
@@ -372,5 +402,9 @@ user_init(void)
     _xt_isr_unmask(1<<ETS_GPIO_INUM);      // Enable ALL gpio interrupts
     // Attach button interrupt, falling edge only
     registerInterrupt(BUTTON_GPIO_NUM,  GPIO_PIN_INTR_NEGEDGE);
+
+    PIN_FUNC_SELECT(LED_GPIO_REG, 0);   // Button pin as GPIO
+    GPIO_AS_OUTPUT(1 << LED_GPIO_NUM);
+    LED_OFF();
 }
 

@@ -78,6 +78,23 @@ getBulbAddr(uint8_t idx) {
   return &bulbs[idx].addr;
 }
 
+int ICACHE_FLASH_ATTR getBulbByMAC(const uint8_t * mac) {
+  uint8_t i, j, found;
+  // Check the bulbs list for the first instance with the same MAC
+  for (i=0;i<num_bulbs;i++) {
+    found = 1;
+    for (j=0;j<6;j++) {
+      if (mac[j] != bulbs[i].mac[j]) {
+        found = 0;
+        break;
+      }
+    }
+    if (found)
+      return i;
+  }
+  return -1;
+}
+
 uint8_t ICACHE_FLASH_ATTR getNumBulbs() {
   return num_bulbs;
 }
